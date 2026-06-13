@@ -1,10 +1,13 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { Card } from "@/components/ui/card";
-import { TagAccount, Trips, Vehicles, AutoRefill } from "@/lib/api";
-import { Car, Leaf, Route as RouteIcon, Wallet, ArrowUpRight } from "lucide-react";
+import { TagAccount, Trips, AutoRefill, Fleet } from "@/lib/api";
+import { Car, Leaf, Route as RouteIcon, Wallet, ArrowUpRight, Clock, CalendarDays } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 export const Route = createFileRoute("/dashboard")({
   component: () => (
@@ -18,14 +21,49 @@ function fmtBRL(n: number) {
   return n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
+function clampNumber(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
+}
+
+function daysInMonth(year: number, month: number) {
+  return new Date(year, month, 0).getDate();
+}
+
+function formatMinutes(value: number | null) {
+  if (value === null) return "0 min";
+  if (value < 60) return `${Math.round(value)} min`;
+  return `${(value / 60).toFixed(2)} h`;
+}
+
 function DashboardInner() {
+  const today = new Date();
+  const [month, setMonth] = useState(today.getMonth() + 1);
+  const [year, setYear] = useState(today.getFullYear());
+
   const balance = useQuery({ queryKey: ["balance"], queryFn: () => TagAccount.balance(), retry: false });
-  const vehicles = useQuery({ queryKey: ["vehicles"], queryFn: () => Vehicles.list(), retry: false });
   const trips = useQuery({ queryKey: ["trips"], queryFn: () => Trips.list(), retry: false });
   const auto = useQuery({ queryKey: ["auto-refill"], queryFn: () => AutoRefill.get(), retry: false });
+  const fleet = useQuery({ queryKey: ["fleet-dashboard"], queryFn: () => Fleet.dashboard(), retry: false });
+  const monthly = useQuery({
+    queryKey: ["fleet-monthly", year, month],
+    queryFn: () => Fleet.monthly(year, month),
+    retry: false,
+  });
+  const environment = useQuery({
+    queryKey: ["fleet-environment"],
+    queryFn: () => Fleet.environment(),
+    retry: false,
+  });
+  const timeSavings = useQuery({
+    queryKey: ["fleet-time-savings"],
+    queryFn: () => Fleet.timeSavings(),
+    retry: false,
+  });
 
-  const totalCO2 = (trips.data ?? []).reduce((s, t) => s + (t.cO2EmissionKg || 0), 0);
-  const totalSpent = (trips.data ?? []).reduce((s, t) => s + (t.totalCost || 0), 0);
+  const monthlyTimeSavedMinutes = monthly.data?.timeSavedMinutes ?? 0;
+  const dailyTimeSavedMinutes = monthlyTimeSavedMinutes / daysInMonth(year, month);
+  const weeklyTimeSavedMinutes = monthlyTimeSavedMinutes / 4.345;
 
   return (
     <div className="space-y-8">
@@ -53,23 +91,86 @@ function DashboardInner() {
         <StatCard
           icon={<Car className="size-5" />}
           label="Veículos"
-          value={vehicles.data ? String(vehicles.data.length) : vehicles.isLoading ? "…" : "0"}
+          value={fleet.data ? String(fleet.data.totalVehicles) : fleet.isLoading ? "..." : "0"}
           hint="Frota cadastrada"
         />
         <StatCard
           icon={<RouteIcon className="size-5" />}
           label="Viagens"
-          value={trips.data ? String(trips.data.length) : trips.isLoading ? "…" : "0"}
-          hint={trips.data ? `Total gasto ${fmtBRL(totalSpent)}` : "Histórico de rotas"}
+          value={fleet.data ? String(fleet.data.totalTrips) : fleet.isLoading ? "..." : "0"}
+          hint={fleet.data ? `Tag ${fmtBRL(fleet.data.totalTagSpent)}` : "Historico de rotas"}
         />
         <StatCard
           icon={<Leaf className="size-5" />}
           label="CO₂ emitido"
-          value={`${totalCO2.toFixed(2)} kg`}
+          value={fleet.data ? `${fleet.data.totalCO2EmissionKg.toFixed(2)} kg` : fleet.isLoading ? "..." : "0 kg"}
           tone="accent"
           hint="Soma das viagens"
         />
       </div>
+
+      <Card className="p-6">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <div className="flex items-center gap-2 text-primary">
+              <CalendarDays className="size-5" />
+              <h2 className="text-lg font-semibold text-foreground">Analise mensal da frota</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              Custos de tag, emissoes e economia operacional por periodo.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <div className="space-y-1">
+              <Label className="text-xs">Mes</Label>
+              <Input
+                type="number"
+                min={1}
+                max={12}
+                value={month}
+                onChange={(e) => setMonth(clampNumber(Number(e.target.value), 1, 12))}
+                className="w-20"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Ano</Label>
+              <Input
+                type="number"
+                min={1}
+                max={9999}
+                value={year}
+                onChange={(e) => setYear(clampNumber(Number(e.target.value), 1, 9999))}
+                className="w-28"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-5">
+          <MiniMetric label="Pedagios no mes" value={monthly.data ? String(monthly.data.tollPassageCount) : monthly.isLoading ? "..." : "0"} />
+          <MiniMetric label="Gasto com tag" value={monthly.data ? fmtBRL(monthly.data.totalTollCost) : monthly.isLoading ? "..." : fmtBRL(0)} />
+          <MiniMetric label="Veiculos usados" value={monthly.data ? String(monthly.data.vehiclesUsed) : monthly.isLoading ? "..." : "0"} />
+          <MiniMetric label="Viagens" value={monthly.data ? String(monthly.data.tripCount) : monthly.isLoading ? "..." : "0"} />
+          <MiniMetric label="Distancia" value={monthly.data ? `${monthly.data.totalDistanceKm.toFixed(1)} km` : monthly.isLoading ? "..." : "0 km"} />
+          <MiniMetric label="Combustivel" value={monthly.data ? fmtBRL(monthly.data.totalFuelCost) : monthly.isLoading ? "..." : fmtBRL(0)} />
+          <MiniMetric label="CO2 emitido" value={monthly.data ? `${monthly.data.totalCO2EmissionKg.toFixed(2)} kg` : monthly.isLoading ? "..." : "0 kg"} />
+          <MiniMetric label="CO2 evitado no mes" value={monthly.data ? `${monthly.data.cO2AvoidedKg.toFixed(2)} kg` : monthly.isLoading ? "..." : "0 kg"} />
+          <MiniMetric label="Tempo/dia evitado" value={monthly.isLoading ? "..." : formatMinutes(dailyTimeSavedMinutes)} />
+          <MiniMetric label="Tempo/semana evitado" value={monthly.isLoading ? "..." : formatMinutes(weeklyTimeSavedMinutes)} />
+          <MiniMetric label="Tempo/mes evitado" value={monthly.data ? formatMinutes(monthly.data.timeSavedMinutes) : monthly.isLoading ? "..." : "0 min"} />
+          <MiniMetric label="Passagens totais" value={environment.data ? String(environment.data.totalTollPassages) : environment.isLoading ? "..." : "0"} />
+        </div>
+
+        <div className="mt-4 grid sm:grid-cols-3 gap-3">
+          <ImpactLine icon={<Leaf className="size-4" />} label="Reducao por passagem" value="0.15 kg CO2" />
+          <ImpactLine icon={<Clock className="size-4" />} label="Tempo evitado por passagem" value="5 min" />
+          <ImpactLine
+            icon={<Clock className="size-4" />}
+            label="Tempo total evitado"
+            value={timeSavings.data ? `${timeSavings.data.timeSavedHours.toFixed(2)} h` : timeSavings.isLoading ? "..." : "0 h"}
+          />
+        </div>
+      </Card>
 
       <div className="grid lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2 p-6">
@@ -154,6 +255,27 @@ function StatCard({
       <div className="mt-3 text-2xl font-semibold tracking-tight">{value}</div>
       {hint && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}
     </Card>
+  );
+}
+
+function MiniMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-muted/40 p-3">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 text-lg font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function ImpactLine({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm">
+      <span className="flex items-center gap-2 text-muted-foreground">
+        <span className="text-primary">{icon}</span>
+        {label}
+      </span>
+      <span className="font-medium">{value}</span>
+    </div>
   );
 }
 
